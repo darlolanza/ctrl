@@ -69,6 +69,7 @@
     </script>
 
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 
 <body>
@@ -82,8 +83,266 @@
             Plus, Minus, Wallet, CreditCard, TrendingUp, TrendingDown,
             DollarSign, User, Save, PieChart, List, Home, Target,
             Snowflake, Check, X, Calendar, Percent, ChevronLeft,
-            ChevronRight, Trash2, Landmark, CalendarClock, PiggyBank, RefreshCw
+            ChevronRight, Trash2, Landmark, CalendarClock, PiggyBank, RefreshCw, Upload, Download, Edit2
         } from 'lucide-react';
+
+        // --- SUPABASE CONFIGURATION ---
+        // TODO: REEMPLAZAR ESTOS VALORES CON LOS DE TU PROYECTO SUPABASE
+        const SUPABASE_URL = 'https://jvastuwfzfoiehsbubzr.supabase.co';
+        const SUPABASE_KEY = 'sb_publishable_2Et3jqrPfCyfBANfscQZWw_MweKm8uw';
+
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // --- SUPABASE SERVICE ---
+        const SupabaseService = {
+            async getAllData() {
+                try {
+                    const [transactions, fixed, cards, goals, settings] = await Promise.all([
+                        supabase.from('transactions').select('*').order('date', { ascending: false }),
+                        supabase.from('fixed_expenses').select('*'),
+                        supabase.from('credit_cards').select('*'),
+                        supabase.from('savings_goals').select('*'),
+                        supabase.from('app_settings').select('*')
+                    ]);
+
+                    if (transactions.error) throw transactions.error;
+                    if (fixed.error) throw fixed.error;
+                    if (cards.error) throw cards.error;
+                    if (goals.error) throw goals.error;
+                    if (settings.error) throw settings.error;
+
+                    // Transform Fixed Expenses to Map by Month
+                    const fixedHistory = {};
+                    fixed.data.forEach(item => {
+                        if (!fixedHistory[item.month_key]) fixedHistory[item.month_key] = [];
+                        fixedHistory[item.month_key].push({
+                            ...item,
+                            endMonth: item.end_month, // map snake_case to camelCase
+                            monthKey: item.month_key
+                        });
+                    });
+
+                    // Get Config
+                    const configRow = settings.data.find(r => r.key === 'config');
+                    const config = configRow ? configRow.value : { exchangeRate: 1120 };
+
+                    return {
+                        transactions: transactions.data.map(t => ({
+                            ...t,
+                            monthKey: t.month_key,
+                            cardId: t.card_id,
+                            cardName: t.card_name,
+                            purchaseDate: t.date, // mapping back
+                            isInstallment: t.is_installment,
+                            originalAmount: t.original_amount
+                        })),
+                        fixedExpensesHistory: fixedHistory,
+                        creditCards: cards.data.map(c => ({
+                            ...c,
+                            closingDay: c.closing_day,
+                            dueDay: c.due_day,
+                            previousAmount: Number(c.previous_amount || 0)
+                        })),
+                        savingsGoals: goals.data,
+                        exchangeRate: config.exchangeRate
+                    };
+                } catch (error) {
+                    console.error("Error fetching data:", error);
+                    // alert("Error obteniendo datos: " + error.message); // Removed debug alert
+                    return null;
+                }
+            },
+
+            // --- WRITE OPERATIONS ---
+            async addTransaction(transaction) {
+                const { id, type, amount, category, description, user, date, monthKey, method, cardId, installments, interest, discount, isInstallment, originalAmount, cardName } = transaction;
+
+                const { error } = await supabase.from('transactions').insert({
+                    id, type, amount, category, description,
+                    user_name: user,
+                    date,
+                    month_key: monthKey,
+                    method,
+                    card_id: cardId || null,
+                    installments, interest, discount,
+                    is_installment: isInstallment || false,
+                    original_amount: originalAmount || null,
+                    card_name: cardName || null
+                });
+                if (error) {
+                    console.error("Error adding transaction:", error);
+                    alert("Error agregando transacción (" + error.code + "): " + error.message);
+                }
+                return !error;
+            },
+
+            async deleteTransaction(id) {
+                const { error } = await supabase.from('transactions').delete().eq('id', id);
+                if (error) alert("Error eliminando transacción: " + error.message);
+                return !error;
+            },
+
+            async updateTransaction(transaction) {
+                const { id, type, amount, category, description, user, date, monthKey, method, cardId, installments, interest, discount, isInstallment, originalAmount, cardName } = transaction;
+
+                // For now, simpler update: recreate logic or just update fields
+                const { error } = await supabase.from('transactions').update({
+                    type, amount, category, description,
+                    user_name: user,
+                    date,
+                    month_key: monthKey,
+                    method,
+                    card_id: cardId || null,
+                    installments, interest, discount,
+                    is_installment: isInstallment || false,
+                    original_amount: originalAmount || null,
+                    card_name: cardName || null
+                }).eq('id', id);
+
+                if (error) {
+                    console.error("Error updating transaction:", error);
+                    alert("Error actualizando transacción: " + error.message);
+                }
+                return !error;
+            },
+
+            async addFixedExpense(expense, monthKey) {
+                const { id, name, projected, real, paid, endMonth } = expense;
+                const { error } = await supabase.from('fixed_expenses').insert({
+                    id, name, projected, real, paid,
+                    month_key: monthKey,
+                    end_month: endMonth
+                });
+                if (error) {
+                    console.error("Error adding fixed expense:", error);
+                    alert("Error agregando gasto fijo (" + error.code + "): " + error.message);
+                }
+                return !error;
+            },
+
+            async updateFixedExpense(id, field, value) {
+                // Map camelCase fields to snake_case for DB
+                const fieldMap = { 'endMonth': 'end_month', 'monthKey': 'month_key' };
+                const dbField = fieldMap[field] || field;
+
+                const { error } = await supabase.from('fixed_expenses').update({ [dbField]: value }).eq('id', id);
+                if (error) {
+                    console.error("Error updating fixed expense:", error);
+                    alert("Error actualizando gasto fijo: " + error.message);
+                }
+                return !error;
+            },
+
+            async deleteFixedExpense(id) {
+                const { error } = await supabase.from('fixed_expenses').delete().eq('id', id);
+                if (error) alert("Error eliminando gasto fijo: " + error.message);
+                return !error;
+            },
+
+            async addCard(card) {
+                const { id, name, bank, closingDay, dueDay, color } = card;
+                const { error } = await supabase.from('credit_cards').insert({
+                    id, name, bank, color,
+                    closing_day: closingDay,
+                    due_day: dueDay,
+                    previous_amount: card.previousAmount || 0
+                });
+                if (error) alert("Error agregando tarjeta: " + error.message);
+                return !error;
+            },
+
+            async updateCard(id, field, value) {
+                const fieldMap = { 'closingDay': 'closing_day', 'dueDay': 'due_day', 'previousAmount': 'previous_amount' };
+                const dbField = fieldMap[field] || field;
+                const { error } = await supabase.from('credit_cards').update({ [dbField]: value }).eq('id', id);
+                if (error) alert("Error actualizando tarjeta: " + error.message);
+                return !error;
+            },
+
+            async deleteCard(id) {
+                const { error } = await supabase.from('credit_cards').delete().eq('id', id);
+                if (error) alert("Error eliminando tarjeta: " + error.message);
+                return !error;
+            },
+
+            async addGoal(goal) {
+                const { id, name, target, current, currency } = goal;
+                const { error } = await supabase.from('savings_goals').insert({
+                    id, name, target, current: current || 0, currency
+                });
+                if (error) alert("Error agregando meta: " + error.message);
+                return !error;
+            },
+
+            async updateGoal(id, field, value) {
+                const { error } = await supabase.from('savings_goals').update({ [field]: value }).eq('id', id);
+                if (error) alert("Error actualizando meta: " + error.message);
+                return !error;
+            },
+
+            async deleteGoal(id) {
+                const { error } = await supabase.from('savings_goals').delete().eq('id', id);
+                if (error) alert("Error eliminando meta: " + error.message);
+                return !error;
+            },
+
+            async updateExchangeRate(rate) {
+                // We store basics in 'config' key
+                const { error } = await supabase.from('app_settings').upsert({
+                    key: 'config',
+                    value: { exchangeRate: Number(rate) }
+                });
+                if (error) alert("Error actualizando configuración: " + error.message);
+                return !error;
+            },
+
+            async migrateData(localData) {
+                // Batch insert transactions
+                if (localData.transactions && localData.transactions.length > 0) {
+                    const mappedTrans = localData.transactions.map(t => ({
+                        id: t.id, type: t.type, amount: t.amount, category: t.category, description: t.description,
+                        user_name: t.user, date: t.date || t.purchaseDate, month_key: t.monthKey, method: t.method,
+                        card_id: t.cardId || null, installments: t.installments || 1, interest: t.interest || 0,
+                        discount: t.discount || 0, is_installment: t.isInstallment || false,
+                        original_amount: t.originalAmount || null, card_name: t.cardName || null
+                    }));
+                    await supabase.from('transactions').upsert(mappedTrans);
+                }
+
+                // Cards
+                if (localData.creditCards) {
+                    const mappedCards = localData.creditCards.map(c => ({
+                        id: c.id, name: c.name, bank: c.bank, color: c.color,
+                        closing_day: c.closingDay, due_day: c.dueDay
+                    }));
+                    await supabase.from('credit_cards').upsert(mappedCards);
+                }
+
+                // Goals
+                if (localData.savingsGoals) {
+                    await supabase.from('savings_goals').upsert(localData.savingsGoals);
+                }
+
+                // Fixed Expenses
+                if (localData.fixedExpensesHistory) {
+                    let allFixed = [];
+                    Object.entries(localData.fixedExpensesHistory).forEach(([mKey, expenses]) => {
+                        expenses.forEach(e => {
+                            allFixed.push({
+                                id: e.id, name: e.name, projected: e.projected, real: e.real, paid: e.paid,
+                                month_key: mKey, end_month: e.endMonth
+                            });
+                        });
+                    });
+                    if (allFixed.length > 0) await supabase.from('fixed_expenses').upsert(allFixed);
+                }
+
+                // Config
+                if (localData.exchangeRate) {
+                    await supabase.from('app_settings').upsert({ key: 'config', value: { exchangeRate: localData.exchangeRate } });
+                }
+            }
+        };
 
         // --- COMPONENTES UI REUTILIZABLES ---
 
@@ -128,6 +387,33 @@
                 </div>
             </div>
         );
+
+        const StableInput = ({ value, onCommit, className, placeholder, type = "text" }) => {
+            const [localValue, setLocalValue] = useState(value);
+
+            useEffect(() => {
+                setLocalValue(value);
+            }, [value]);
+
+            return (
+                <input
+                    type={type}
+                    className={className}
+                    value={localValue}
+                    onChange={(e) => setLocalValue(e.target.value)}
+                    onBlur={() => {
+                        if (localValue !== value) onCommit(localValue);
+                    }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                            if (localValue !== value) onCommit(localValue);
+                            e.target.blur();
+                        }
+                    }}
+                    placeholder={placeholder}
+                />
+            );
+        };
 
         const Select = ({ label, value, onChange, options, name }) => (
             <div className="flex flex-col gap-1.5 w-full">
@@ -178,7 +464,7 @@
                 { id: 1, name: 'Fondo de Emergencia', target: 5000, current: 1200, currency: 'USD' },
                 { id: 2, name: 'Vacaciones 2026', target: 2000, current: 450, currency: 'USD' },
             ],
-            creditCards: INITIAL_CARDS,
+            creditCards: [], // Initialize empty to fetch from DB
             exchangeRate: 1120
         };
 
@@ -239,21 +525,23 @@
             // --- STATE MANAGEMENT ---
             const [activeTab, setActiveTab] = useState('dashboard');
             const [showAddModal, setShowAddModal] = useState(false);
+            const [editingTransaction, setEditingTransaction] = useState(null);
             const [currentDate, setCurrentDate] = useState(new Date());
             const [currencyMode, setCurrencyMode] = useState('ARS'); // 'ARS' or 'USD'
-
-            const [data, setData] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('finanzasFlowData');
-                    return saved ? { ...INITIAL_DATA, ...JSON.parse(saved) } : INITIAL_DATA;
-                } catch (e) {
-                    return INITIAL_DATA;
-                }
-            });
+            const [data, setData] = useState(INITIAL_DATA);
+            const [loading, setLoading] = useState(true);
 
             useEffect(() => {
-                localStorage.setItem('finanzasFlowData', JSON.stringify(data));
-            }, [data]);
+                const loadData = async () => {
+                    setLoading(true);
+                    const fetchedData = await SupabaseService.getAllData();
+                    if (fetchedData) {
+                        setData(fetchedData);
+                    }
+                    setLoading(false);
+                };
+                loadData();
+            }, []);
 
             // --- HELPERS DE FORMATO ---
             const formatMoneyARS = (amount) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0 }).format(amount);
@@ -330,9 +618,10 @@
             const balance = totalIncome - totalExpenses - totalSavingsContrib;
 
             // --- ACCIONES ---
-            const addTransaction = (transaction) => {
+            const addTransaction = async (transaction) => {
                 let newTransactions = [];
-                const purchaseDateObj = new Date(transaction.purchaseDate || new Date());
+                // Fix timezone issue: Treat YYYY-MM-DD input as local time
+                const purchaseDateObj = new Date(transaction.purchaseDate + 'T00:00:00');
 
                 if (transaction.type === 'expense' && transaction.method === 'Crédito' && transaction.cardId) {
                     const selectedCard = data.creditCards.find(c => c.id === Number(transaction.cardId));
@@ -362,7 +651,7 @@
                             id: Date.now() + i,
                             amount: installmentAmount,
                             originalAmount: transaction.amount,
-                            date: paymentDate.toLocaleDateString('es-AR'),
+                            date: paymentDate.toISOString().split('T')[0],
                             monthKey: getMonthKey(paymentDate),
                             description: `${transaction.description || transaction.category} (${i + 1}/${transaction.installments})`,
                             isInstallment: true,
@@ -375,103 +664,192 @@
                     newTransactions.push({
                         ...transaction,
                         id: Date.now(),
-                        date: dateObj.toLocaleDateString('es-AR'),
+                        date: dateObj.toISOString().split('T')[0],
                         monthKey: getMonthKey(dateObj)
                     });
                 }
 
-                setData(prev => ({
-                    ...prev,
-                    transactions: [...newTransactions, ...prev.transactions]
-                }));
-                setShowAddModal(false);
+                // Sync with Supabase
+                const results = await Promise.all(newTransactions.map(t => SupabaseService.addTransaction(t)));
+
+                if (results.every(Boolean)) {
+                    setData(prev => ({
+                        ...prev,
+                        transactions: [...newTransactions, ...prev.transactions]
+                    }));
+                    setShowAddModal(false);
+                } else {
+                    alert("Error al guardar en Supabase. Intenta nuevamente.");
+                }
             };
 
-            const updateFixedExpense = (id, field, value) => {
-                const updatedExpenses = currentFixedExpenses.map(item =>
-                    item.id === id ? { ...item, [field]: (field === 'paid' || field === 'name' || field === 'endMonth') ? value : Number(value) } : item
-                );
-                setData(prev => ({
-                    ...prev,
-                    fixedExpensesHistory: {
-                        ...prev.fixedExpensesHistory,
-                        [currentMonthKey]: updatedExpenses
-                    }
-                }));
+            const updateTransaction = async (updatedTransaction) => {
+                // Ensure date object for monthKey
+                const dateObj = new Date(updatedTransaction.purchaseDate + 'T00:00:00');
+                const transactionToSave = {
+                    ...updatedTransaction,
+                    date: dateObj.toISOString().split('T')[0],
+                    monthKey: getMonthKey(dateObj)
+                };
+
+                const success = await SupabaseService.updateTransaction(transactionToSave);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        transactions: prev.transactions.map(t => t.id === updatedTransaction.id ? transactionToSave : t)
+                    }));
+                    setShowAddModal(false);
+                    setEditingTransaction(null);
+                }
             };
 
-            const addFixedExpense = () => {
+            const deleteTransaction = async (id) => {
+                if (!confirm('¿Estás seguro de que deseas eliminar esta transacción?')) return;
+
+                const success = await SupabaseService.deleteTransaction(id);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        transactions: prev.transactions.filter(t => t.id !== id)
+                    }));
+                }
+            };
+
+            const openEditModal = (transaction) => {
+                setEditingTransaction(transaction);
+                setShowAddModal(true);
+            };
+
+            const updateFixedExpense = async (id, field, value) => {
+                const success = await SupabaseService.updateFixedExpense(id, field, value);
+                if (success) {
+                    const updatedExpenses = currentFixedExpenses.map(item =>
+                        item.id === id ? { ...item, [field]: (field === 'paid' || field === 'name' || field === 'endMonth') ? value : Number(value) } : item
+                    );
+                    setData(prev => ({
+                        ...prev,
+                        fixedExpensesHistory: {
+                            ...prev.fixedExpensesHistory,
+                            [currentMonthKey]: updatedExpenses
+                        }
+                    }));
+                }
+            };
+
+            const addFixedExpense = async () => {
                 const newExpense = { id: Date.now(), name: '', projected: 0, real: 0, paid: false, endMonth: '' };
-                const updatedExpenses = [...currentFixedExpenses, newExpense];
-                setData(prev => ({
-                    ...prev,
-                    fixedExpensesHistory: {
-                        ...prev.fixedExpensesHistory,
-                        [currentMonthKey]: updatedExpenses
-                    }
-                }));
+                const success = await SupabaseService.addFixedExpense(newExpense, currentMonthKey);
+                if (success) {
+                    const updatedExpenses = [...currentFixedExpenses, newExpense];
+                    setData(prev => ({
+                        ...prev,
+                        fixedExpensesHistory: {
+                            ...prev.fixedExpensesHistory,
+                            [currentMonthKey]: updatedExpenses
+                        }
+                    }));
+                }
             };
 
-            const deleteFixedExpense = (id) => {
-                const updatedExpenses = currentFixedExpenses.filter(item => item.id !== id);
-                setData(prev => ({
-                    ...prev,
-                    fixedExpensesHistory: {
-                        ...prev.fixedExpensesHistory,
-                        [currentMonthKey]: updatedExpenses
-                    }
-                }));
+            const deleteFixedExpense = async (id) => {
+                const success = await SupabaseService.deleteFixedExpense(id);
+                if (success) {
+                    const updatedExpenses = currentFixedExpenses.filter(item => item.id !== id);
+                    setData(prev => ({
+                        ...prev,
+                        fixedExpensesHistory: {
+                            ...prev.fixedExpensesHistory,
+                            [currentMonthKey]: updatedExpenses
+                        }
+                    }));
+                }
             };
 
-            const addCard = () => {
-                const newCard = { id: Date.now(), name: 'Nueva Tarjeta', bank: '', closingDay: 25, dueDay: 5, color: 'bg-slate-600' };
-                setData(prev => ({ ...prev, creditCards: [...prev.creditCards, newCard] }));
+            const addCard = async () => {
+                const newCard = {
+                    id: Date.now(),
+                    name: 'Nueva Tarjeta',
+                    bank: '',
+                    closingDay: 25,
+                    dueDay: 5,
+                    color: 'bg-slate-600',
+                    previousAmount: 0
+                };
+                const success = await SupabaseService.addCard(newCard);
+                if (success) {
+                    setData(prev => ({ ...prev, creditCards: [...prev.creditCards, newCard] }));
+                }
             };
 
-            const updateCard = (id, field, value) => {
-                setData(prev => ({
-                    ...prev,
-                    creditCards: prev.creditCards.map(c => c.id === id ? { ...c, [field]: value } : c)
-                }));
+            const updateCard = async (id, field, value) => {
+                const success = await SupabaseService.updateCard(id, field, value);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        creditCards: prev.creditCards.map(c => c.id === id ? { ...c, [field]: value } : c)
+                    }));
+                }
             };
 
-            const deleteCard = (id) => {
-                setData(prev => ({
-                    ...prev,
-                    creditCards: prev.creditCards.filter(c => c.id !== id)
-                }));
+            const deleteCard = async (id) => {
+                const success = await SupabaseService.deleteCard(id);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        creditCards: prev.creditCards.filter(c => c.id !== id)
+                    }));
+                }
             };
 
-            const addSavingsGoal = () => {
+            const addSavingsGoal = async () => {
                 const newGoal = { id: Date.now(), name: 'Nueva Meta', target: 0, current: 0, currency: 'USD' };
-                setData(prev => ({ ...prev, savingsGoals: [...prev.savingsGoals, newGoal] }));
+                const success = await SupabaseService.addGoal(newGoal);
+                if (success) {
+                    setData(prev => ({ ...prev, savingsGoals: [...prev.savingsGoals, newGoal] }));
+                }
             };
 
-            const updateSavingsGoal = (id, field, value) => {
-                setData(prev => ({
-                    ...prev,
-                    savingsGoals: prev.savingsGoals.map(g => g.id === id ? { ...g, [field]: field === 'name' ? value : Number(value) } : g)
-                }));
+            const updateSavingsGoal = async (id, field, value) => {
+                const success = await SupabaseService.updateGoal(id, field, value);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        savingsGoals: prev.savingsGoals.map(g => g.id === id ? { ...g, [field]: field === 'name' ? value : Number(value) } : g)
+                    }));
+                }
             };
 
-            const updateSavingsAmount = (id, amount) => {
-                setData(prev => ({
-                    ...prev,
-                    savingsGoals: prev.savingsGoals.map(g => g.id === id ? { ...g, current: Math.max(0, g.current + amount) } : g)
-                }));
+            const updateSavingsAmount = async (id, amount) => {
+                const goal = data.savingsGoals.find(g => g.id === id);
+                if (!goal) return;
+                const newAmount = Math.max(0, goal.current + amount);
+                const success = await SupabaseService.updateGoal(id, 'current', newAmount);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        savingsGoals: prev.savingsGoals.map(g => g.id === id ? { ...g, current: newAmount } : g)
+                    }));
+                }
             };
 
-            const deleteSavingsGoal = (id) => {
-                setData(prev => ({
-                    ...prev,
-                    savingsGoals: prev.savingsGoals.filter(g => g.id !== id)
-                }));
+            const deleteSavingsGoal = async (id) => {
+                const success = await SupabaseService.deleteGoal(id);
+                if (success) {
+                    setData(prev => ({
+                        ...prev,
+                        savingsGoals: prev.savingsGoals.filter(g => g.id !== id)
+                    }));
+                }
             };
 
             // --- MODAL COMPONENT ---
             const AddTransactionModal = () => {
-                const [type, setType] = useState('expense');
-                const [formData, setFormData] = useState({
+                const [type, setType] = useState(editingTransaction ? editingTransaction.type : 'expense');
+                const [formData, setFormData] = useState(editingTransaction ? {
+                    ...editingTransaction,
+                    user: editingTransaction.user_name || editingTransaction.user, // Handle potential inconsistent field naming
+                    purchaseDate: editingTransaction.date || editingTransaction.purchaseDate
+                } : {
                     amount: '',
                     category: 'Supermercado',
                     user: 'Dario',
@@ -483,6 +861,10 @@
                     discount: 0,
                     purchaseDate: new Date().toISOString().split('T')[0]
                 });
+
+                useEffect(() => {
+                    if (!showAddModal) setEditingTransaction(null);
+                }, [showAddModal]);
 
                 const calculatedTotal = () => {
                     if (!formData.amount) return 0;
@@ -498,7 +880,11 @@
                 const handleSubmit = (e) => {
                     e.preventDefault();
                     if (!formData.amount) return;
-                    addTransaction({ ...formData, type });
+                    if (editingTransaction) {
+                        updateTransaction({ ...formData, type, id: editingTransaction.id });
+                    } else {
+                        addTransaction({ ...formData, type });
+                    }
                 };
 
                 return (
@@ -638,9 +1024,12 @@
                                 )}
 
                                 <div className="pt-2">
-                                    <Button type="submit" variant="primary" className="w-full">
-                                        Guardar {type === 'expense' ? 'Gasto' : 'Ingreso'}
-                                    </Button>
+                                    <button
+                                        type="submit"
+                                        className={`w-full py-4 rounded-xl font-bold text-slate-900 text-lg shadow-xl transition-transform active:scale-95 ${type === 'expense' ? 'bg-amber-500 hover:bg-amber-400' : 'bg-emerald-500 hover:bg-emerald-400'}`}
+                                    >
+                                        {editingTransaction ? 'Actualizar Transacción' : (type === 'expense' ? 'Guardar Gasto' : 'Guardar Ingreso')}
+                                    </button>
                                 </div>
                             </form>
                         </div>
@@ -652,115 +1041,118 @@
 
             const DashboardView = () => (
                 <div className="space-y-6 pb-24 animate-fade-in">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <Card className="p-6 bg-gradient-to-br from-slate-800 to-slate-900 border-l-4 border-l-amber-500 relative overflow-hidden">
-                            <div className="absolute top-0 right-0 p-4 opacity-5">
-                                <Wallet size={80} className="text-white" />
+                    {/* Dashboard Grid - Full width 'Disponible', then 2 columns below for Income/Expense */}
+                    <div className="flex flex-col gap-4">
+                        <Card className="p-6 md:p-8 bg-gradient-to-br from-slate-800 to-slate-900 border-l-4 border-l-amber-500 relative overflow-hidden text-center">
+                            <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+                                <Wallet size={120} className="text-white" />
                             </div>
-                            <p className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">Disponible {getDisplayMonth(currentDate)}</p>
-                            <h2 className="text-4xl font-bold text-white mb-2 tracking-tight">{formatValue(balance)}</h2>
-                            <p className="text-amber-400 font-mono text-lg flex items-center gap-2 font-bold opacity-80">
-                                {currencyMode === 'ARS' ? formatMoneyUSD(balance / data.exchangeRate) : formatMoneyARS(balance)}
-                                <span className="text-xs text-slate-400 font-sans tracking-wide font-normal">(aprox)</span>
-                            </p>
+                            <div className="relative z-10 flex flex-col items-center">
+                                <p className="text-slate-400 text-xs md:text-sm font-bold uppercase tracking-widest mb-2">Disponible {getDisplayMonth(currentDate)}</p>
+                                <h2 className="text-4xl md:text-6xl font-bold text-white mb-3 tracking-tight break-all">{formatValue(balance)}</h2>
+                                <p className="text-amber-400 font-mono text-sm md:text-xl flex items-center justify-center gap-2 font-bold opacity-80">
+                                    {currencyMode === 'ARS' ? formatMoneyUSD(balance / data.exchangeRate) : formatMoneyARS(balance)}
+                                    <span className="text-xs text-slate-400 font-sans tracking-wide font-normal">(aprox)</span>
+                                </p>
+                            </div>
                         </Card>
 
-                        <div className="grid grid-cols-2 md:grid-cols-1 gap-4">
-                            <Card className="p-4 flex flex-col justify-center border-l-4 border-l-emerald-500 relative overflow-hidden">
-                                <p className="text-xs text-emerald-400 font-bold mb-1">+ INGRESOS</p>
-                                <p className="text-xl font-bold text-white">{formatValue(totalIncome)}</p>
+                        <div className="grid grid-cols-2 gap-4">
+                            <Card className="p-4 md:p-6 flex flex-col justify-center items-center text-center border-l-4 border-l-emerald-500 relative overflow-hidden">
+                                <p className="text-[10px] md:text-xs text-emerald-400 font-bold uppercase tracking-wider mb-2">+ INGRESOS</p>
+                                <p className="text-lg md:text-2xl font-bold text-white break-all">{formatValue(totalIncome)}</p>
                             </Card>
 
-                            <Card className="p-4 flex flex-col justify-center border-l-4 border-l-rose-500 relative overflow-hidden">
-                                <p className="text-xs text-rose-400 font-bold mb-1">- GASTOS TOTALES</p>
-                                <p className="text-xl font-bold text-white">{formatValue(totalExpenses + totalSavingsContrib)}</p>
+                            <Card className="p-4 md:p-6 flex flex-col justify-center items-center text-center border-l-4 border-l-rose-500 relative overflow-hidden">
+                                <p className="text-[10px] md:text-xs text-rose-400 font-bold uppercase tracking-wider mb-2">- GASTOS TOTALES</p>
+                                <p className="text-lg md:text-2xl font-bold text-white break-all">{formatValue(totalExpenses + totalSavingsContrib)}</p>
                             </Card>
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <Card className="p-6">
-                            <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-                                <PieChart className="text-amber-500" size={20} /> Distribución Mensual
-                            </h3>
-                            <div className="space-y-5">
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-slate-300 font-medium">Gastos Fijos (Real)</span>
-                                        <span className="text-white font-mono">{formatValue(totalFixedExpensesReal)}</span>
-                                    </div>
-                                    <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-blue-500 rounded-full"
-                                            style={{ width: `${Math.min((totalFixedExpensesReal / (totalExpenses + totalSavingsContrib || 1)) * 100, 100)}%` }}
-                                        ></div>
-                                    </div>
-                                </div>
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-slate-300 font-medium">Gastos Variables</span>
-                                        <span className="text-white font-mono">{formatValue(totalVariableExpenses)}</span>
-                                    </div>
-                                    <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-rose-500 rounded-full"
-                                            style={{ width: `${Math.min((totalVariableExpenses / (totalExpenses + totalSavingsContrib || 1)) * 100, 100)}%` }}
-                                        ></div>
-                                    </div>
-                                </div>
-                            </div>
-                        </Card>
 
-                        <Card className="p-6">
-                            <div className="flex justify-between items-center mb-4">
-                                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                                    <List className="text-amber-500" size={20} /> Movimientos {getDisplayMonth(currentDate)}
-                                </h3>
-                                <button onClick={() => setActiveTab('transactions')} className="text-xs text-amber-500 hover:text-amber-400 font-bold uppercase tracking-wider">Ver Todo</button>
+                    <Card className="p-6">
+                        <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
+                            <PieChart className="text-amber-500" size={20} /> Distribución Mensual
+                        </h3>
+                        <div className="space-y-5">
+                            <div className="space-y-2">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-300 font-medium">Gastos Fijos (Real)</span>
+                                    <span className="text-white font-mono">{formatValue(totalFixedExpensesReal)}</span>
+                                </div>
+                                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                                    <div
+                                        className="h-full bg-blue-500 rounded-full"
+                                        style={{ width: `${Math.min((totalFixedExpensesReal / (totalExpenses + totalSavingsContrib || 1)) * 100, 100)}%` }}
+                                    ></div>
+                                </div>
                             </div>
-                            <div className="space-y-3">
-                                {monthTransactions.slice(0, 5).map(t => (
-                                    <div key={t.id} className="flex items-center justify-between p-3 bg-slate-900/50 rounded-xl hover:bg-slate-700/50 transition-colors border border-transparent hover:border-slate-600">
-                                        <div className="flex items-center gap-3">
-                                            <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg ${t.type === 'income' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                                                {t.type === 'income' ? <TrendingUp size={18} /> : <CreditCard size={18} />}
-                                            </div>
-                                            <div>
-                                                <p className="text-white font-medium text-sm">{t.category}</p>
-                                                <div className="flex items-center gap-2 text-[10px] text-slate-400 uppercase font-bold tracking-wide">
-                                                    <span className="flex items-center gap-1"><User size={10} /> {t.user}</span>
-                                                    {t.installments > 1 && (
-                                                        <span className="bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                                                            {t.description.match(/(\d+\/\d+)/)?.[0] || `x${t.installments}`}
-                                                        </span>
-                                                    )}
-                                                    {t.cardName && (
-                                                        <span className="bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded font-bold">
-                                                            {t.cardName}
-                                                        </span>
-                                                    )}
-                                                </div>
+                            <div className="space-y-2">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-slate-300 font-medium">Gastos Variables</span>
+                                    <span className="text-white font-mono">{formatValue(totalVariableExpenses)}</span>
+                                </div>
+                                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                                    <div
+                                        className="h-full bg-rose-500 rounded-full"
+                                        style={{ width: `${Math.min((totalVariableExpenses / (totalExpenses + totalSavingsContrib || 1)) * 100, 100)}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        </div>
+                    </Card>
+
+                    <Card className="p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                                <List className="text-amber-500" size={20} /> Movimientos {getDisplayMonth(currentDate)}
+                            </h3>
+                            <button onClick={() => setActiveTab('transactions')} className="text-xs text-amber-500 hover:text-amber-400 font-bold uppercase tracking-wider">Ver Todo</button>
+                        </div>
+                        <div className="space-y-3">
+                            {monthTransactions.slice(0, 5).map(t => (
+                                <div key={t.id} className="flex items-center justify-between p-3 bg-slate-900/50 rounded-xl hover:bg-slate-700/50 transition-colors border border-transparent hover:border-slate-600">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg ${t.type === 'income' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                                            {t.type === 'income' ? <TrendingUp size={18} /> : <CreditCard size={18} />}
+                                        </div>
+                                        <div>
+                                            <p className="text-white font-medium text-sm">{t.category}</p>
+                                            <div className="flex items-center gap-2 text-[10px] text-slate-400 uppercase font-bold tracking-wide">
+                                                <span className="flex items-center gap-1"><User size={10} /> {t.user}</span>
+                                                {t.installments > 1 && (
+                                                    <span className="bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                                                        {t.description.match(/(\d+\/\d+)/)?.[0] || `x${t.installments}`}
+                                                    </span>
+                                                )}
+                                                {t.cardName && (
+                                                    <span className="bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded font-bold">
+                                                        {t.cardName}
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
-                                        <div className="text-right">
-                                            <p className={`font-mono font-bold text-sm ${t.type === 'income' ? 'text-emerald-400' : 'text-white'}`}>
-                                                {t.type === 'income' ? '+' : '-'}{formatValue(t.amount)}
-                                            </p>
-                                            <p className="text-[10px] text-slate-500 font-mono">
-                                                {currencyMode === 'ARS' ? formatMoneyUSD(t.amount / data.exchangeRate) : formatMoneyARS(t.amount * data.exchangeRate)}
-                                            </p>
-                                        </div>
                                     </div>
-                                ))}
-                                {monthTransactions.length === 0 && (
-                                    <div className="text-center py-8 text-slate-500 text-sm">
-                                        No hay movimientos en este mes.
+                                    <div className="text-right">
+                                        <p className={`font-mono font-bold text-sm ${t.type === 'income' ? 'text-emerald-400' : 'text-white'}`}>
+                                            {t.type === 'income' ? '+' : '-'}{formatValue(t.amount)}
+                                        </p>
+                                        <p className="text-[10px] text-slate-500 font-mono">
+                                            {currencyMode === 'ARS' ? formatMoneyUSD(t.amount / data.exchangeRate) : formatMoneyARS(t.amount * data.exchangeRate)}
+                                        </p>
                                     </div>
-                                )}
-                            </div>
-                        </Card>
-                    </div>
-                </div>
+                                </div>
+                            ))}
+                            {monthTransactions.length === 0 && (
+                                <div className="text-center py-8 text-slate-500 text-sm">
+                                    No hay movimientos en este mes.
+                                </div>
+                            )}
+                        </div>
+                    </Card>
+
+                </div >
             );
 
             const TransactionsView = () => (
@@ -768,7 +1160,15 @@
                     <h3 className="text-xl font-bold text-white mb-4 px-2">Historial - {getDisplayMonth(currentDate)}</h3>
                     <div className="space-y-3">
                         {monthTransactions.map((t) => (
-                            <Card key={t.id} className="p-4 flex flex-col gap-2">
+                            <Card key={t.id} className="p-4 flex flex-col gap-2 relative group">
+                                <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-800/80 p-1 rounded-lg">
+                                    <button onClick={() => openEditModal(t)} className="text-slate-400 hover:text-amber-500 p-1">
+                                        <Edit2 size={16} />
+                                    </button>
+                                    <button onClick={() => deleteTransaction(t.id)} className="text-slate-400 hover:text-rose-500 p-1">
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
                                 <div className="flex justify-between items-start">
                                     <div className="flex gap-3">
                                         <div className={`mt-1 w-8 h-8 rounded-full flex items-center justify-center ${t.type === 'income' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
@@ -922,10 +1322,11 @@
             );
 
             const CardsView = () => {
-                const calculateCardTotal = (cardId) => {
-                    return monthTransactions
-                        .filter(t => t.method === 'Crédito' && Number(t.cardId) === cardId)
+                const calculateCardTotal = (card) => {
+                    const monthTotal = monthTransactions
+                        .filter(t => t.method === 'Crédito' && Number(t.cardId) === card.id)
                         .reduce((acc, curr) => acc + Number(curr.amount), 0);
+                    return Number(card.previousAmount || 0) + monthTotal;
                 };
 
                 return (
@@ -949,26 +1350,38 @@
                                             <div className={`absolute top-0 right-0 w-24 h-24 ${card.color || 'bg-slate-500'} opacity-10 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110`}></div>
 
                                             <div className="flex justify-between items-start mb-4 relative z-10">
-                                                <div className="space-y-1">
-                                                    <input
-                                                        type="text"
+                                                <div className="space-y-1 overflow-hidden flex-1">
+                                                    <StableInput
                                                         className="bg-transparent text-white font-bold text-lg focus:outline-none placeholder-slate-400 w-full"
                                                         value={card.name}
-                                                        onChange={(e) => updateCard(card.id, 'name', e.target.value)}
+                                                        onCommit={(val) => updateCard(card.id, 'name', val)}
                                                         placeholder="Nombre Tarjeta"
                                                     />
                                                     <div className="flex items-center gap-1 text-slate-400 text-xs uppercase tracking-wide">
                                                         <Landmark size={12} />
-                                                        <input
-                                                            type="text"
-                                                            className="bg-transparent text-slate-400 focus:text-white focus:outline-none placeholder-slate-500"
+                                                        <StableInput
+                                                            className="bg-transparent text-slate-400 focus:text-white focus:outline-none placeholder-slate-500 w-full"
                                                             value={card.bank}
-                                                            onChange={(e) => updateCard(card.id, 'bank', e.target.value)}
+                                                            onCommit={(val) => updateCard(card.id, 'bank', val)}
                                                             placeholder="Banco"
                                                         />
                                                     </div>
                                                 </div>
-                                                <button onClick={() => deleteCard(card.id)} className="text-slate-500 hover:text-rose-400 p-1"><Trash2 size={16} /></button>
+                                                <button onClick={() => deleteCard(card.id)} className="text-slate-500 hover:text-rose-400 p-1 flex-shrink-0"><Trash2 size={16} /></button>
+                                            </div>
+
+                                            <div className="mb-4 relative z-10 bg-slate-900/30 p-2 rounded-xl border border-slate-700/50">
+                                                <label className="text-[9px] text-slate-500 font-bold uppercase block mb-1">Monto Previo (Deuda Traída)</label>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-slate-400 text-sm font-mono">$</span>
+                                                    <StableInput
+                                                        type="number"
+                                                        className="bg-transparent text-amber-500 text-sm font-bold focus:outline-none w-full"
+                                                        value={card.previousAmount}
+                                                        onCommit={(val) => updateCard(card.id, 'previousAmount', Number(val))}
+                                                        placeholder="0.00"
+                                                    />
+                                                </div>
                                             </div>
 
                                             <div className="grid grid-cols-2 gap-4 mb-4 relative z-10">
@@ -977,11 +1390,11 @@
                                                     <div className="flex items-center gap-1 bg-slate-900/50 rounded-lg px-2 py-1.5 border border-slate-600">
                                                         <Calendar size={12} className="text-indigo-400" />
                                                         <span className="text-slate-400 text-xs">Día</span>
-                                                        <input
+                                                        <StableInput
                                                             type="number"
                                                             className="bg-transparent w-8 text-white text-sm font-bold focus:outline-none text-center"
                                                             value={card.closingDay}
-                                                            onChange={(e) => updateCard(card.id, 'closingDay', e.target.value)}
+                                                            onCommit={(val) => updateCard(card.id, 'closingDay', Number(val))}
                                                         />
                                                     </div>
                                                 </div>
@@ -990,11 +1403,11 @@
                                                     <div className="flex items-center gap-1 bg-slate-900/50 rounded-lg px-2 py-1.5 border border-slate-600">
                                                         <CalendarClock size={12} className="text-amber-400" />
                                                         <span className="text-slate-400 text-xs">Día</span>
-                                                        <input
+                                                        <StableInput
                                                             type="number"
                                                             className="bg-transparent w-8 text-white text-sm font-bold focus:outline-none text-center"
                                                             value={card.dueDay}
-                                                            onChange={(e) => updateCard(card.id, 'dueDay', e.target.value)}
+                                                            onCommit={(val) => updateCard(card.id, 'dueDay', Number(val))}
                                                         />
                                                     </div>
                                                 </div>
@@ -1002,7 +1415,7 @@
 
                                             <div className="border-t border-slate-600 pt-3 relative z-10">
                                                 <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Total a Pagar ({getDisplayMonth(currentDate)})</p>
-                                                <p className="text-2xl font-bold text-white font-mono">{formatValue(totalToPay)}</p>
+                                                <p className="text-2xl font-bold text-white font-mono">{formatValue(calculateCardTotal(card))}</p>
                                             </div>
                                         </div>
                                     );
@@ -1122,6 +1535,15 @@
                     <span className={`text-[10px] font-bold uppercase tracking-wide transition-opacity duration-300 ${active ? 'opacity-100' : 'opacity-70'}`}>{label}</span>
                 </button>
             );
+
+            if (loading) {
+                return (
+                    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-4">
+                        <div className="w-12 h-12 border-4 border-slate-800 border-t-amber-500 rounded-full animate-spin"></div>
+                        <p className="text-slate-500 font-bold text-sm uppercase tracking-widest animate-pulse">Sincronizando...</p>
+                    </div>
+                );
+            }
 
             return (
                 <div className="min-h-screen bg-slate-950 font-sans text-slate-200 selection:bg-amber-500/30">
